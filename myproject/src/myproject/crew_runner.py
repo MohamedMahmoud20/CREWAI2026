@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import warnings
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from myproject.runtime_context import (  # noqa: E402
     skip_name_confirmation_scope,
 )
 from myproject.tools.tools import (  # noqa: E402
+    fetch_account_by_id_payload,
+    fetch_invoice_books_payload,
     fetch_item_desc_payload,
     fetch_items_payload,
     fetch_supplier_cards_payload,
@@ -205,6 +208,69 @@ def _looks_like_supplier_cards_request(user_text: str) -> bool:
     return any(keyword.casefold() in text for keyword in keywords)
 
 
+def _invoice_books_type(user_text: str) -> str | None:
+    text = (user_text or "").strip().casefold()
+    if not text:
+        return None
+
+    has_books_word = any(
+        word in text
+        for word in (
+            "\u062f\u0641\u0627\u062a\u0631",
+            "\u0627\u0644\u062f\u0641\u0627\u062a\u0631",
+            "book",
+            "books",
+            "invoice type",
+            "invtype",
+        )
+    )
+    if not has_books_word:
+        return None
+
+    if any(word in text for word in ("\u0645\u0628\u064a\u0639\u0627\u062a", "\u0627\u0644\u0645\u0628\u064a\u0639\u0627\u062a", "sales", "sale")):
+        return "sales"
+    if any(word in text for word in ("\u0645\u0634\u062a\u0631\u064a\u0627\u062a", "\u0627\u0644\u0645\u0634\u062a\u0631\u064a\u0627\u062a", "purchases", "purchase", "buy")):
+        return "purchases"
+
+    return "all"
+
+
+def _extract_account_id_request(user_text: str) -> int | None:
+    text = (user_text or "").strip().casefold()
+    if not text:
+        return None
+
+    has_account_word = any(
+        word in text
+        for word in (
+            "\u0639\u0645\u064a\u0644",
+            "\u0627\u0644\u0639\u0645\u064a\u0644",
+            "\u062d\u0633\u0627\u0628",
+            "\u0627\u0644\u062d\u0633\u0627\u0628",
+            "account",
+            "client",
+            "customer",
+        )
+    )
+    if not has_account_word:
+        return None
+
+    patterns = (
+        r"\bid\s*(?:بتاعه|بتاعها|=|:)?\s*(\d+)\b",
+        r"\b(?:account|client|customer)\s*(?:id|#|number|no\.?)?\s*(\d+)\b",
+        r"(?:رقم|كود)\s*(\d+)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+
+    return None
+
+
 def kickoff_crew(
     user_text: str,
     company_id: int | None = None,
@@ -213,6 +279,18 @@ def kickoff_crew(
     fiscal_year_id: int | None = None,
 ) -> Any:
     """Run the crew with the user's text; returns normalized payload (same as API `data`)."""
+    account_id = _extract_account_id_request(user_text)
+    if account_id is not None:
+        return fetch_account_by_id_payload(account_id=account_id, auth_header=auth_header)
+
+    invoice_books_type = _invoice_books_type(user_text)
+    if invoice_books_type is not None:
+        return fetch_invoice_books_payload(
+            company_id=company_id,
+            book_type=invoice_books_type,
+            auth_header=auth_header,
+        )
+
     if _looks_like_item_desc_request(user_text):
         return fetch_item_desc_payload(company_id=company_id, auth_header=auth_header)
 

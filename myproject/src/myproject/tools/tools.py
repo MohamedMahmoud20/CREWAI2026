@@ -140,6 +140,23 @@ class GetClientTool(BaseTool):
             )
 
 
+class GetAccountByIdInput(BaseModel):
+    account_id: int = Field(..., description="Account ID to fetch, e.g. 153")
+
+
+class GetAccountByIdTool(BaseTool):
+    name: str = "get_account_by_id"
+    description: str = (
+        "Fetch one existing account/client by exact id from GET /api/accounts/{account_id}. "
+        "Use this when the user provides an account id, for example 'account id 153' "
+        "or Arabic requests like 'هات الحساب رقم 153'."
+    )
+    args_schema: type[BaseModel] = GetAccountByIdInput
+
+    def _run(self, account_id: int) -> str:
+        return json.dumps(fetch_account_by_id_payload(account_id), ensure_ascii=False)
+
+
 # Base URL for accounts API
 # Can be overridden via env var: ACCOUNTS_API_BASE
 ACCOUNTS_API_BASE = os.getenv("ACCOUNTS_API_BASE", "http://104.248.246.2/api").rstrip("/")
@@ -525,6 +542,137 @@ def fetch_supplier_cards_payload(
     return {"status": "success", "http_status": response.status_code, "data": _filter_accounts_list(raw_data)}
 
 
+def fetch_account_by_id_payload(
+    account_id: int | str,
+    auth_header: str | None = None,
+) -> dict[str, object]:
+    account_id_int = _to_int_or_none(account_id)
+    if account_id_int is None:
+        return {"status": "error", "http_status": 400, "error": "Invalid account_id", "data": None}
+
+    try:
+        response = requests.get(
+            f"{ACCOUNTS_API_BASE}/accounts/{account_id_int}",
+            headers=_api_headers(auth_header) if auth_header else _accounts_api_headers(),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return {
+            "status": "error",
+            "http_status": None,
+            "error": f"Account API request failed: {exc}",
+            "data": None,
+        }
+
+    try:
+        raw_data = response.json()
+    except Exception:
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "Invalid JSON response",
+            "data": None,
+        }
+
+    if not (200 <= response.status_code < 300):
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "API request failed",
+            "data": raw_data,
+        }
+
+    records = _extract_account_list(raw_data)
+    if records:
+        filtered = _filter_accounts_fields(records[0])
+        data: object = filtered if filtered else records[0]
+        if isinstance(data, dict) and data.get("id") is None:
+            data = {"id": str(account_id_int), **data}
+    else:
+        data = raw_data
+
+    return {"status": "success", "http_status": response.status_code, "data": data}
+
+
+def _extract_list_payload(payload: object, keys: tuple[str, ...] = ("data", "items", "results", "records")) -> object:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in keys:
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return nested
+    return payload
+
+
+def fetch_invoice_books_payload(
+    company_id: int | None,
+    book_type: str = "all",
+    auth_header: str | None = None,
+) -> dict[str, object]:
+    if company_id is None:
+        return {"status": "error", "http_status": 400, "error": "Missing company_id", "data": []}
+
+    normalized_type = (book_type or "").strip().casefold()
+    if normalized_type in {"", "all", "any", "كل", "الكل", "دفاتر", "كل الدفاتر"}:
+        inv_type = None
+    elif normalized_type in {"sales", "sale", "مبيعات", "دفاتر المبيعات"}:
+        inv_type = "-"
+    elif normalized_type in {"purchases", "purchase", "buy", "مشتريات", "دفاتر المشتريات"}:
+        inv_type = "true"
+    else:
+        return {
+            "status": "error",
+            "http_status": 400,
+            "error": "Invalid book_type. Use 'all', 'sales', or 'purchases'.",
+            "data": [],
+        }
+
+    try:
+        params: dict[str, object] = {"companyId": company_id}
+        if inv_type is not None:
+            params["InvType_Type"] = inv_type
+
+        response = requests.get(
+            f"{ACCOUNTS_API_BASE}/InvType",
+            params=params,
+            headers=_api_headers(auth_header) if auth_header else _accounts_api_headers(),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return {
+            "status": "error",
+            "http_status": None,
+            "error": f"Invoice books API request failed: {exc}",
+            "data": [],
+        }
+
+    try:
+        raw_data = response.json()
+    except Exception:
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "Invalid JSON response",
+            "data": [],
+        }
+
+    if not (200 <= response.status_code < 300):
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "API request failed",
+            "data": raw_data,
+        }
+
+    return {
+        "status": "success",
+        "http_status": response.status_code,
+        "book_type": "all" if inv_type is None else "sales" if inv_type == "-" else "purchases",
+        "data": _extract_list_payload(raw_data),
+    }
+
+
 def fetch_items_payload(
     company_id: int | None,
     query: str | None = None,
@@ -631,6 +779,7 @@ def _first_key(record: dict, *keys: str):
 def _pick_get_client_fields(record: dict) -> dict:
     """
     For get_client responses: extract only the required fields.
+    - accounts_id
     - accounts_name
     - companyId
     - accounts_mobile
@@ -638,6 +787,7 @@ def _pick_get_client_fields(record: dict) -> dict:
     - accounts_ismain
     - accounts_issandouk
     """
+    account_id = _first_key(record, "accounts_id", "id", "account_id")
     name = _first_key(record, "accounts_name", "name", "client_name")
     comp = _first_key(record, "companyId", "company_id", "companyid")
     mobile = _first_key(record, "accounts_mobile", "accounts_clientmobile2", "accounts_clientmobile3", "mobile")
@@ -646,6 +796,8 @@ def _pick_get_client_fields(record: dict) -> dict:
     issandouk = _first_key(record, "accounts_issandouk", "is_sandouk", "issandouk")
 
     out: dict[str, object] = {}
+    if account_id is not None:
+        out["accounts_id"] = account_id
     if name is not None:
         out["accounts_name"] = name
     if comp is not None:
@@ -1168,6 +1320,14 @@ def _filter_accounts_fields(record: dict) -> dict | None:
         return None
     
     out: dict[str, object] = {}
+
+    record_id = record.get("id")
+    if record_id is not None:
+        out["id"] = record_id
+
+    account_id = record.get("accounts_id") or record.get("account_id")
+    if account_id is not None:
+        out["accounts_id"] = account_id
     
     # Extract name
     name = record.get("accounts_name") or record.get("name")
@@ -1333,6 +1493,37 @@ class GetUnitsTool(BaseTool):
             fetch_units_payload(
                 company_id=effective_company_id,
                 query=query,
+            ),
+            ensure_ascii=False,
+        )
+
+
+class GetInvoiceBooksInput(BaseModel):
+    company_id: int | None = Field(None, description="Company ID (optional, uses session context if omitted)")
+    book_type: str = Field("all", description="Use 'all' for all books, 'sales' for sales books, or 'purchases' for purchase books.")
+
+
+class GetInvoiceBooksTool(BaseTool):
+    name: str = "get_invoice_books"
+    description: str = (
+        "Get invoice books/دفاتر from GET /api/InvType?companyId=...&InvType_Type=... . "
+        "Use book_type='all' for all دفاتر with no InvType_Type filter. "
+        "Use book_type='sales' for دفاتر المبيعات (InvType_Type=-). "
+        "Use book_type='purchases' for دفاتر المشتريات (InvType_Type=true)."
+    )
+    args_schema: type[BaseModel] = GetInvoiceBooksInput
+
+    def _run(
+        self,
+        book_type: str,
+        company_id: int | None = None,
+    ) -> str:
+        ctx_cid = get_active_company_id()
+        effective_company_id = company_id if company_id is not None else ctx_cid
+        return json.dumps(
+            fetch_invoice_books_payload(
+                company_id=effective_company_id,
+                book_type=book_type,
             ),
             ensure_ascii=False,
         )

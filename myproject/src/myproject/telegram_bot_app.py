@@ -215,11 +215,15 @@ def _fetch_fiscal_years(company_id: int, auth_header: str | None) -> list[dict]:
 
 
 def _filter_telegram_accounts_fields(record: dict) -> dict | None:
-    """Extract required fields: accounts_name, companyId, accounts_mobile, accounts_code, accounts_ismain, accounts_issandouk"""
+    """Extract required account fields for Telegram output."""
     if not isinstance(record, dict):
         return None
     
     out: dict[str, object] = {}
+
+    account_id = record.get("accounts_id") or record.get("id") or record.get("account_id")
+    if account_id is not None:
+        out["accounts_id"] = account_id
     
     name = record.get("accounts_name") or record.get("name")
     if name is not None:
