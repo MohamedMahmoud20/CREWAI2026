@@ -277,6 +277,10 @@ def _api_headers(auth_header: str | None = None) -> dict[str, str]:
     return headers
 
 
+def _build_get_url(endpoint: str, params: dict[str, object]) -> str:
+    return requests.Request("GET", endpoint, params=params).prepare().url or endpoint
+
+
 def _filter_item_fields(record: dict) -> dict | None:
     if not isinstance(record, dict):
         return None
@@ -671,6 +675,302 @@ def fetch_invoice_books_payload(
         "book_type": "all" if inv_type is None else "sales" if inv_type == "-" else "purchases",
         "data": _extract_list_payload(raw_data),
     }
+
+
+def _pick_account_search_record(query: str, company_id: int | None, auth_header: str | None = None) -> dict | None:
+    name_payload = fetch_account_by_name_payload(company_id=company_id, account_name=query, auth_header=auth_header)
+    name_records = _extract_account_list(name_payload.get("data") if isinstance(name_payload, dict) else name_payload)
+    if name_records:
+        return name_records[0]
+
+    result, api = search_accounts_with_api(query=query, company_id=company_id, tree=False)
+    raw_records = _extract_account_list(api)
+    filtered_raw = _locally_filter_accounts(raw_records, query)
+    if filtered_raw:
+        return filtered_raw[0]
+    if raw_records:
+        return raw_records[0]
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        return result[0]
+    return None
+
+
+def fetch_account_by_name_payload(
+    company_id: int | None,
+    account_name: str,
+    auth_header: str | None = None,
+) -> dict[str, object]:
+    if company_id is None:
+        return {"status": "error", "http_status": 400, "error": "Missing company_id", "data": []}
+
+    name = _to_str_or_none(account_name)
+    if not name:
+        return {"status": "error", "http_status": 400, "error": "Missing account_name", "data": []}
+
+    try:
+        response = requests.get(
+            f"{ACCOUNTS_API_BASE}/accounts",
+            params={"accounts_name": name, "companyId": company_id},
+            headers=_api_headers(auth_header) if auth_header else _accounts_api_headers(),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return {
+            "status": "error",
+            "http_status": None,
+            "error": f"Account name search API request failed: {exc}",
+            "data": [],
+        }
+
+    try:
+        raw_data = response.json()
+    except Exception:
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "Invalid JSON response",
+            "data": [],
+        }
+
+    if not (200 <= response.status_code < 300):
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "API request failed",
+            "data": raw_data,
+        }
+
+    records = _extract_account_list(raw_data)
+    records = _locally_filter_accounts(records, name) if records else []
+    filtered = [_filter_accounts_fields(record) for record in records]
+    return {
+        "status": "success",
+        "http_status": response.status_code,
+        "data": [record for record in filtered if record],
+    }
+
+
+def _filter_account_sheet_account(record: dict) -> dict:
+    if not isinstance(record, dict):
+        return {}
+
+    fields = (
+        "id",
+        "accounts_id",
+        "accounts_name",
+        "accounts_code",
+        "accounts_ismain",
+    )
+    return {field: record[field] for field in fields if field in record}
+
+
+def _filter_account_sheet_detail_row(row: dict) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+
+    row_type = row.get("rowType")
+    if row_type == "opening":
+        fields = ("rowType", "openingBalance", "Accounts_Id", "fromDate")
+    elif row_type == "summary":
+        fields = ("rowType", "M", "D", "Sum", "showOpeningBalance")
+    else:
+        fields = (
+            "serial_number",
+            "Account_Sheet_id",
+            "Account_Sheet_Details_M",
+            "Account_Sheet_Details_D",
+            "Accounts_Id",
+            "Account_Sheet_Details_date",
+            "Account_Sheet_Details_id",
+            "Bransh_id",
+            "Account_Sheet_IsTrans",
+            "last_balance",
+            "createdAt",
+            "updatedAt",
+        )
+
+    filtered = {field: row[field] for field in fields if field in row}
+    return filtered if filtered else None
+
+
+def _filter_account_sheet_details_payload(payload: object) -> object:
+    rows = _extract_list_payload(payload)
+    if isinstance(rows, list):
+        return [
+            filtered
+            for row in rows
+            if isinstance(row, dict)
+            for filtered in (_filter_account_sheet_detail_row(row),)
+            if filtered
+        ]
+    if isinstance(rows, dict):
+        return _filter_account_sheet_detail_row(rows) or rows
+    return rows
+
+
+def _to_float_or_none(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip().replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _amount_equals(left, right) -> bool:
+    left_num = _to_float_or_none(left)
+    right_num = _to_float_or_none(right)
+    if left_num is None or right_num is None:
+        return False
+    return abs(left_num - right_num) < 0.000001
+
+
+def _filter_account_sheet_amounts(
+    rows: object,
+    debit_amount: float | int | str | None = None,
+    credit_amount: float | int | str | None = None,
+) -> object:
+    debit_filter = _to_float_or_none(debit_amount)
+    credit_filter = _to_float_or_none(credit_amount)
+    if debit_filter is None and credit_filter is None:
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    filtered_rows = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("rowType") in {"opening", "summary"}:
+            continue
+        if debit_filter is not None and not _amount_equals(row.get("Account_Sheet_Details_M"), debit_filter):
+            continue
+        if credit_filter is not None and not _amount_equals(row.get("Account_Sheet_Details_D"), credit_filter):
+            continue
+        filtered_rows.append(row)
+    return filtered_rows
+
+
+def fetch_account_sheet_details_payload(
+    company_id: int | None,
+    account_name: str,
+    auth_header: str | None = None,
+    order_by_date: bool = True,
+    show_unposted_entries: bool = False,
+    show_opening_balance: bool = True,
+    not_show_zero_transiation: bool = True,
+    debit_amount: float | int | str | None = None,
+    credit_amount: float | int | str | None = None,
+) -> dict[str, object]:
+    if company_id is None:
+        return {"status": "error", "http_status": 400, "error": "Missing company_id", "data": []}
+
+    query = _to_str_or_none(account_name)
+    if not query:
+        return {"status": "error", "http_status": 400, "error": "Missing account_name", "data": []}
+
+    try:
+        account = _pick_account_search_record(query=query, company_id=company_id, auth_header=auth_header)
+    except AccountsSearchError as exc:
+        return {"status": "error", "http_status": exc.http_status, "error": exc.message, "data": []}
+
+    if not account:
+        return {
+            "status": "error",
+            "http_status": 404,
+            "error": "Account not found",
+            "account_name": query,
+            "data": [],
+        }
+
+    accounts_id = _first_key(account, "accounts_id", "account_id", "id")
+    if accounts_id is None:
+        return {
+            "status": "error",
+            "http_status": 400,
+            "error": "Matched account has no accounts_id",
+            "account": account,
+            "data": [],
+        }
+
+    params: dict[str, object] = {
+        "companyId": company_id,
+        "orderByDate": "true" if order_by_date else "false",
+        "showUnpostedEntries": "true" if show_unposted_entries else "false",
+        "showOpeningBalance": "true" if show_opening_balance else "false",
+        "notShowZeroTransiation": "true" if not_show_zero_transiation else "false",
+        "Accounts_Id": accounts_id,
+    }
+    endpoint = f"{ACCOUNTS_API_BASE}/accountsSheetDetails"
+    endpoint_url = _build_get_url(endpoint, params)
+    account_lookup_endpoint = _build_get_url(
+        f"{ACCOUNTS_API_BASE}/accounts",
+        {"accounts_name": query, "companyId": company_id},
+    )
+
+    try:
+        response = requests.get(
+            endpoint,
+            params=params,
+            headers=_api_headers(auth_header) if auth_header else _accounts_api_headers(),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return {
+            "status": "error",
+            "http_status": None,
+            "error": f"Account sheet details API request failed: {exc}",
+            "account_lookup_endpoint": account_lookup_endpoint,
+            "endpoint": endpoint_url,
+            "account": _filter_accounts_fields(account) or account,
+            "data": [],
+        }
+
+    try:
+        raw_data = response.json()
+    except Exception:
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "Invalid JSON response",
+            "account_lookup_endpoint": account_lookup_endpoint,
+            "endpoint": endpoint_url,
+            "account": _filter_accounts_fields(account) or account,
+            "data": [],
+        }
+
+    if not (200 <= response.status_code < 300):
+        return {
+            "status": "error",
+            "http_status": response.status_code,
+            "error": "API request failed",
+            "account_lookup_endpoint": account_lookup_endpoint,
+            "endpoint": response.url or endpoint_url,
+            "account": _filter_accounts_fields(account) or account,
+            "data": raw_data,
+        }
+
+    filtered_data = _filter_account_sheet_details_payload(raw_data)
+    filtered_data = _filter_account_sheet_amounts(
+        filtered_data,
+        debit_amount=debit_amount,
+        credit_amount=credit_amount,
+    )
+    amount_filters: dict[str, object] = {}
+    if _to_float_or_none(debit_amount) is not None:
+        amount_filters["Account_Sheet_Details_M"] = _to_float_or_none(debit_amount)
+    if _to_float_or_none(credit_amount) is not None:
+        amount_filters["Account_Sheet_Details_D"] = _to_float_or_none(credit_amount)
+
+    result = {
+        "status": "success",
+        "http_status": response.status_code,
+        "account_lookup_endpoint": account_lookup_endpoint,
+        "endpoint": response.url or endpoint_url,
+        "account": _filter_account_sheet_account(_filter_accounts_fields(account) or account),
+        "data": filtered_data,
+    }
+    if amount_filters:
+        result["filters"] = amount_filters
+    return result
 
 
 def fetch_items_payload(
@@ -1524,6 +1824,54 @@ class GetInvoiceBooksTool(BaseTool):
             fetch_invoice_books_payload(
                 company_id=effective_company_id,
                 book_type=book_type,
+            ),
+            ensure_ascii=False,
+        )
+
+
+class GetAccountSheetDetailsInput(BaseModel):
+    company_id: int | None = Field(None, description="Company ID (optional, uses session context if omitted)")
+    account_name: str = Field(..., description="Account name to search before fetching sheet details.")
+    order_by_date: bool = Field(True, description="orderByDate: filter/order by date")
+    show_unposted_entries: bool = Field(False, description="showUnpostedEntries: show unposted entries")
+    show_opening_balance: bool = Field(True, description="showOpeningBalance: show opening balance")
+    not_show_zero_transiation: bool = Field(True, description="notShowZeroTransiation: hide zero transactions")
+    debit_amount: float | None = Field(None, description="Filter transactions by Account_Sheet_Details_M (debit)")
+    credit_amount: float | None = Field(None, description="Filter transactions by Account_Sheet_Details_D (credit)")
+
+
+class GetAccountSheetDetailsTool(BaseTool):
+    name: str = "get_account_sheet_details"
+    description: str = (
+        "Get detailed account statement / كشف الحساب التفصيلي for one account by name. "
+        "First searches accounts by account_name, then uses the matched accounts_id in "
+        "GET /api/accountsSheetDetails?companyId=...&Accounts_Id=..."
+    )
+    args_schema: type[BaseModel] = GetAccountSheetDetailsInput
+
+    def _run(
+        self,
+        account_name: str,
+        company_id: int | None = None,
+        order_by_date: bool = True,
+        show_unposted_entries: bool = False,
+        show_opening_balance: bool = True,
+        not_show_zero_transiation: bool = True,
+        debit_amount: float | None = None,
+        credit_amount: float | None = None,
+    ) -> str:
+        ctx_cid = get_active_company_id()
+        effective_company_id = company_id if company_id is not None else ctx_cid
+        return json.dumps(
+            fetch_account_sheet_details_payload(
+                company_id=effective_company_id,
+                account_name=account_name,
+                order_by_date=order_by_date,
+                show_unposted_entries=show_unposted_entries,
+                show_opening_balance=show_opening_balance,
+                not_show_zero_transiation=not_show_zero_transiation,
+                debit_amount=debit_amount,
+                credit_amount=credit_amount,
             ),
             ensure_ascii=False,
         )

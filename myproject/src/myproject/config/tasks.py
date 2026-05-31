@@ -39,11 +39,25 @@ client_task = Task(
     Client/account search intent:
     Use get_client when the user asks to search/fetch/find an existing client/account.
     Search can be by account name OR phone number OR account code. Pass the value as query.
+    For a name request such as "\u0639\u0627\u064a\u0632 \u062d\u0633\u0627\u0628 \u0645\u0628\u0627\u0646\u064a", search by accounts_name="\u0645\u0628\u0627\u0646\u064a".
 
     Client/account by id intent:
     Use get_account_by_id when the user asks for one account by exact id.
     Examples: "account id 153", "get account 153", "\u0647\u0627\u062a \u0627\u0644\u062d\u0633\u0627\u0628 \u0631\u0642\u0645 153".
     Pass only the numeric id as account_id.
+
+    Detailed account statement intent:
+    Use get_account_sheet_details when the user asks for "\u0643\u0634\u0641 \u062d\u0633\u0627\u0628" or
+    "\u0643\u0634\u0641 \u0627\u0644\u062d\u0633\u0627\u0628 \u0627\u0644\u062a\u0641\u0635\u064a\u0644\u064a" for a named account.
+    Search by the provided account name, then use the matched accounts_id as Accounts_Id in
+    /api/accountsSheetDetails.
+    Optional filters:
+    - show_unposted_entries controls showUnpostedEntries / \u0639\u0631\u0636 \u0627\u0644\u0642\u064a\u0648\u062f \u0627\u0644\u063a\u064a\u0631 \u0645\u0631\u062d\u0644\u0629.
+    - not_show_zero_transiation controls notShowZeroTransiation / \u0639\u062f\u0645 \u0639\u0631\u0636 \u0627\u0644\u0645\u0639\u0627\u0645\u0644\u0627\u062a \u0627\u0644\u0635\u0641\u0631\u064a\u0629.
+    - order_by_date controls orderByDate / \u0641\u0644\u062a\u0631 \u0628\u0627\u0644\u062a\u0627\u0631\u064a\u062e.
+    - show_opening_balance controls showOpeningBalance / \u0639\u0631\u0636 \u0631\u0635\u064a\u062f \u0627\u0648\u0644 \u0627\u0644\u0645\u062f\u0629.
+    - debit_amount filters Account_Sheet_Details_M / \u0627\u0644\u0645\u062f\u064a\u0646 by exact amount.
+    - credit_amount filters Account_Sheet_Details_D / \u0627\u0644\u062f\u0627\u0626\u0646 by exact amount.
 
     Account list intent:
     - get_all_accounts_tree for all accounts / account tree

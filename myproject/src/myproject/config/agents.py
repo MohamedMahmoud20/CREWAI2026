@@ -4,6 +4,7 @@ from myproject.config.llm_config import local_llm
 from myproject.tools.tools import (
     CreateClientTool,
     GetAccountByIdTool,
+    GetAccountSheetDetailsTool,
     GetAllAccountsTreeTool,
     GetClientTool,
     GetInvoiceBooksTool,
@@ -27,12 +28,13 @@ client_agent = Agent(
        and provides a client/account name.
     2. Search existing clients/accounts by name, phone number, or account code.
     3. Get one existing client/account by exact account id.
-    4. Get account lists: all accounts tree, sub accounts, or sandouk accounts.
-    5. Get items/products/categories from the items endpoint.
-    6. Get stock units from the units endpoint.
-    7. Get item material descriptions/recipes from the Stock_ItemDesc endpoint.
-    8. Get invoice books: sales books or purchase books.
-    9. Get supplier account cards from the supplier cards endpoint.
+    4. Get detailed account sheet/statement for one account by account name.
+    5. Get account lists: all accounts tree, sub accounts, or sandouk accounts.
+    6. Get items/products/categories from the items endpoint.
+    7. Get stock units from the units endpoint.
+    8. Get item material descriptions/recipes from the Stock_ItemDesc endpoint.
+    9. Get invoice books: sales books or purchase books.
+    10. Get supplier account cards from the supplier cards endpoint.
 
     Important routing rules:
     - Do not call create_client unless the user explicitly wants a new client/account.
@@ -48,6 +50,11 @@ client_agent = Agent(
     - For "كل الدفاتر" or "هات الدفاتر", use get_invoice_books with book_type="all".
     - For "دفاتر المبيعات", use get_invoice_books with book_type="sales".
     - For "دفاتر المشتريات", use get_invoice_books with book_type="purchases".
+    - For account name search requests such as "عايز حساب مباني", search for the account name "مباني".
+    - For detailed account statement requests such as "كشف حساب مباني" or "كشف الحساب التفصيلي لحساب مباني",
+      use get_account_sheet_details with the provided account name.
+      It supports order_by_date, show_unposted_entries, show_opening_balance, and not_show_zero_transiation.
+      It also supports debit_amount for Account_Sheet_Details_M and credit_amount for Account_Sheet_Details_D.
     - Never treat item/product requests as client registration.
     - If the request is unclear, return JSON asking for clarification instead of guessing.
     - When calling a tool, pass real values only. Never pass the tool schema/properties as input.
@@ -55,6 +62,7 @@ client_agent = Agent(
     """,
     tools=[
         GetAccountByIdTool(),
+        GetAccountSheetDetailsTool(),
         GetClientTool(),
         CreateClientTool(),
         GetItemsTool(),

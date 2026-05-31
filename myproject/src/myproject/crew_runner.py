@@ -26,6 +26,8 @@ from myproject.runtime_context import (  # noqa: E402
 )
 from myproject.tools.tools import (  # noqa: E402
     fetch_account_by_id_payload,
+    fetch_account_by_name_payload,
+    fetch_account_sheet_details_payload,
     fetch_invoice_books_payload,
     fetch_item_desc_payload,
     fetch_items_payload,
@@ -271,6 +273,165 @@ def _extract_account_id_request(user_text: str) -> int | None:
     return None
 
 
+def _extract_account_sheet_name(user_text: str) -> str | None:
+    text = (user_text or "").strip()
+    if not text:
+        return None
+
+    text_cf = text.casefold()
+    has_statement_intent = (
+        "\u0643\u0634\u0641" in text_cf and "\u062d\u0633\u0627\u0628" in text_cf
+    ) or "account statement" in text_cf or "accountsheetdetails" in text_cf
+    if not has_statement_intent:
+        return None
+
+    cleaned = _strip_account_sheet_filter_phrases(text)
+    cleaned = re.sub(
+        r"(?i)\b(account\s+statement|detailed\s+account\s+statement|accountsheetdetails)\b",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(\u0639\u0627\u064a\u0632|\u0639\u0627\u0648\u0632|\u0647\u0627\u062a\u0644\u064a|\u0647\u0627\u062a|\u062c\u064a\u0628|\u0627\u062c\u064a\u0628|\u0644\u0648 \u0633\u0645\u062d\u062a|\u0645\u0646 \u0641\u0636\u0644\u0643)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(\u0643\u0634\u0641\s+\u0627\u0644\u062d\u0633\u0627\u0628\s+\u0627\u0644\u062a\u0641\u0635\u064a\u0644\u064a|\u0643\u0634\u0641\s+\u062d\u0633\u0627\u0628\s+\u062a\u0641\u0635\u064a\u0644\u064a|\u0643\u0634\u0641\s+\u062d\u0633\u0627\u0628|\u0643\u0634\u0641\s+\u0627\u0644\u062d\u0633\u0627\u0628)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"^(\u0644|\u0644\u0640|for)\s+", " ", cleaned.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" :،,-")
+    if cleaned.startswith("\u0644") and len(cleaned) > 1:
+        cleaned = cleaned[1:].strip()
+    cleaned = re.sub(
+        r"^(\u062d\u0633\u0627\u0628|\u0627\u0644\u062d\u0633\u0627\u0628|account)\s+",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" :،,-")
+    return cleaned or None
+
+
+def _strip_account_sheet_filter_phrases(text: str) -> str:
+    cleaned = text or ""
+    phrases = (
+        r"(\u0645\u0639\s+)?(\u0639\u0631\u0636|اظهار|إظهار)\s+(\u0627\u0644)?\u0642\u064a\u0648\u062f\s+(\u0627\u0644)?\u063a\u064a\u0631\s+(\u0645\u0631\u062d\u0644\u0647|\u0645\u0631\u062d\u0644\u0629)",
+        r"(\u0645\u0646\s+)?(\u063a\u064a\u0631|دون|بدون|عدم)\s+(\u0639\u0631\u0636|اظهار|إظهار)?\s*(\u0627\u0644)?\u0642\u064a\u0648\u062f\s+(\u0627\u0644)?\u063a\u064a\u0631\s+(\u0645\u0631\u062d\u0644\u0647|\u0645\u0631\u062d\u0644\u0629)",
+        r"(\u0645\u0639\s+)?(\u0639\u0631\u0636|اظهار|إظهار)\s+(\u0627\u0644)?\u0645\u0639\u0627\u0645\u0644\u0627\u062a\s+(\u0627\u0644)?\u0635\u0641\u0631\u064a(\u0647|\u0629)",
+        r"(\u0645\u0646\s+)?(\u063a\u064a\u0631|دون|بدون|عدم)\s+(\u0639\u0631\u0636|اظهار|إظهار)?\s*(\u0627\u0644)?\u0645\u0639\u0627\u0645\u0644\u0627\u062a\s+(\u0627\u0644)?\u0635\u0641\u0631\u064a(\u0647|\u0629)",
+        r"(\u0645\u0639\s+)?(\u0639\u0631\u0636|اظهار|إظهار)\s+(\u0631\u0635\u064a\u062f\s+)?(\u0627\u0648\u0644|أول)\s+(\u0627\u0644)?\u0645\u062f(\u0647|\u0629)",
+        r"(\u0645\u0646\s+)?(\u063a\u064a\u0631|دون|بدون|عدم)\s+(\u0639\u0631\u0636|اظهار|إظهار)?\s*(\u0631\u0635\u064a\u062f\s+)?(\u0627\u0648\u0644|أول)\s+(\u0627\u0644)?\u0645\u062f(\u0647|\u0629)",
+        r"(\u0645\u0639\s+)?(\u0641\u0644\u062a\u0631|ترتيب)\s+(\u0628)?(\u0627\u0644)?\u062a\u0627\u0631\u064a\u062e",
+        r"(\u0645\u0646\s+)?(\u063a\u064a\u0631|دون|بدون|عدم)\s+(\u0641\u0644\u062a\u0631|ترتيب)\s+(\u0628)?(\u0627\u0644)?\u062a\u0627\u0631\u064a\u062e",
+        r"\b(show|hide)\s+unposted\s+entries\b",
+        r"\b(show|hide)\s+zero\s+transactions\b",
+        r"\b(show|hide)\s+opening\s+balance\b",
+        r"\b(order\s+by\s+date|without\s+date\s+order)\b",
+        r"(\u0644)?(\u0643\u0644\s+)?(\u0627\u0644)?\u0645\u0639\u0627\u0645\u0644\u0627\u062a\s+(\u0627\u0644\u0644\u064a\s+)?(\u0627\u0644)?\u0645\u062f\u064a\u0646\s+(\u0628\u062a\u0627\u0639\u0647\u0627|بتاعها|=|:)?\s*[\d,.]+",
+        r"(\u0644)?(\u0643\u0644\s+)?(\u0627\u0644)?\u0645\u0639\u0627\u0645\u0644\u0627\u062a\s+(\u0627\u0644\u0644\u064a\s+)?(\u0627\u0644)?\u062f\u0627\u0626\u0646\s+(\u0628\u062a\u0627\u0639\u0647\u0627|بتاعها|=|:)?\s*[\d,.]+",
+        r"(\u0627\u0644)?\u0645\u062f\u064a\u0646\s+(\u0628\u062a\u0627\u0639\u0647\u0627|بتاعها|=|:)?\s*[\d,.]+",
+        r"(\u0627\u0644)?\u062f\u0627\u0626\u0646\s+(\u0628\u062a\u0627\u0639\u0647\u0627|بتاعها|=|:)?\s*[\d,.]+",
+        r"\b(debit|credit)\s*(?:amount|=|:)?\s*[\d,.]+\b",
+    )
+    for phrase in phrases:
+        cleaned = re.sub(phrase, " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_account_sheet_options(user_text: str) -> dict[str, bool]:
+    text = (user_text or "").casefold()
+    options = {
+        "order_by_date": True,
+        "show_unposted_entries": False,
+        "show_opening_balance": True,
+        "not_show_zero_transiation": True,
+    }
+
+    negative_words = r"(\u063a\u064a\u0631|دون|بدون|عدم|مش|لا)"
+
+    if re.search(r"(\u0639\u0631\u0636|اظهار|إظهار)\s+(\u0627\u0644)?\u0642\u064a\u0648\u062f\s+(\u0627\u0644)?\u063a\u064a\u0631\s+(\u0645\u0631\u062d\u0644\u0647|\u0645\u0631\u062d\u0644\u0629)|show\s+unposted", text):
+        options["show_unposted_entries"] = True
+    if re.search(negative_words + r".{0,12}(\u0627\u0644)?\u0642\u064a\u0648\u062f\s+(\u0627\u0644)?\u063a\u064a\u0631\s+(\u0645\u0631\u062d\u0644\u0647|\u0645\u0631\u062d\u0644\u0629)|hide\s+unposted", text):
+        options["show_unposted_entries"] = False
+
+    if re.search(r"(\u0639\u0631\u0636|اظهار|إظهار)\s+(\u0627\u0644)?\u0645\u0639\u0627\u0645\u0644\u0627\u062a\s+(\u0627\u0644)?\u0635\u0641\u0631\u064a(\u0647|\u0629)|show\s+zero", text):
+        options["not_show_zero_transiation"] = False
+    if re.search(negative_words + r".{0,12}(\u0627\u0644)?\u0645\u0639\u0627\u0645\u0644\u0627\u062a\s+(\u0627\u0644)?\u0635\u0641\u0631\u064a(\u0647|\u0629)|hide\s+zero", text):
+        options["not_show_zero_transiation"] = True
+
+    if re.search(r"(\u0639\u0631\u0636|اظهار|إظهار)\s+(\u0631\u0635\u064a\u062f\s+)?(\u0627\u0648\u0644|أول)\s+(\u0627\u0644)?\u0645\u062f(\u0647|\u0629)|show\s+opening", text):
+        options["show_opening_balance"] = True
+    if re.search(negative_words + r".{0,12}(\u0631\u0635\u064a\u062f\s+)?(\u0627\u0648\u0644|أول)\s+(\u0627\u0644)?\u0645\u062f(\u0647|\u0629)|hide\s+opening", text):
+        options["show_opening_balance"] = False
+
+    if re.search(r"(\u0641\u0644\u062a\u0631|ترتيب)\s+(\u0628)?(\u0627\u0644)?\u062a\u0627\u0631\u064a\u062e|order\s+by\s+date", text):
+        options["order_by_date"] = True
+    if re.search(negative_words + r".{0,12}(\u0641\u0644\u062a\u0631|ترتيب)\s+(\u0628)?(\u0627\u0644)?\u062a\u0627\u0631\u064a\u062e|without\s+date\s+order", text):
+        options["order_by_date"] = False
+
+    return options
+
+
+def _extract_account_sheet_amount_filters(user_text: str) -> dict[str, float]:
+    text = (user_text or "").casefold()
+    filters: dict[str, float] = {}
+
+    debit_patterns = (
+        r"(?:\u0627\u0644)?\u0645\u062f\u064a\u0646\s*(?:\u0628\u062a\u0627\u0639\u0647\u0627|بتاعها|=|:)?\s*([\d,.]+)",
+        r"\bdebit\s*(?:amount|=|:)?\s*([\d,.]+)\b",
+    )
+    credit_patterns = (
+        r"(?:\u0627\u0644)?\u062f\u0627\u0626\u0646\s*(?:\u0628\u062a\u0627\u0639\u0647\u0627|بتاعها|=|:)?\s*([\d,.]+)",
+        r"\bcredit\s*(?:amount|=|:)?\s*([\d,.]+)\b",
+    )
+
+    for pattern in debit_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            filters["debit_amount"] = float(match.group(1).replace(",", ""))
+            break
+    for pattern in credit_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            filters["credit_amount"] = float(match.group(1).replace(",", ""))
+            break
+
+    return filters
+
+
+def _extract_account_name_search(user_text: str) -> str | None:
+    text = (user_text or "").strip()
+    if not text:
+        return None
+
+    text_cf = text.casefold()
+    if "\u0643\u0634\u0641" in text_cf:
+        return None
+    if any(word in text_cf for word in ("\u0636\u064a\u0641", "\u0627\u0636\u0641", "\u0633\u062c\u0644", "\u0627\u0646\u0634\u0627\u0621", "create", "add", "register")):
+        return None
+    if not any(word in text_cf for word in ("\u062d\u0633\u0627\u0628", "\u0627\u0644\u062d\u0633\u0627\u0628", "\u0639\u0645\u064a\u0644", "\u0627\u0644\u0639\u0645\u064a\u0644", "account", "client", "customer")):
+        return None
+
+    cleaned = re.sub(
+        r"(\u0639\u0627\u064a\u0632|\u0639\u0627\u0648\u0632|\u0647\u0627\u062a\u0644\u064a|\u0647\u0627\u062a|\u062c\u064a\u0628|\u0627\u062c\u064a\u0628|\u0644\u0648 \u0633\u0645\u062d\u062a|\u0645\u0646 \u0641\u0636\u0644\u0643)",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(?i)\b(account|client|customer)\b|(\u0627\u0644\u062d\u0633\u0627\u0628|\u062d\u0633\u0627\u0628|\u0627\u0644\u0639\u0645\u064a\u0644|\u0639\u0645\u064a\u0644)",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" :،,-")
+    return cleaned or None
+
+
 def kickoff_crew(
     user_text: str,
     company_id: int | None = None,
@@ -282,6 +443,28 @@ def kickoff_crew(
     account_id = _extract_account_id_request(user_text)
     if account_id is not None:
         return fetch_account_by_id_payload(account_id=account_id, auth_header=auth_header)
+
+    account_sheet_name = _extract_account_sheet_name(user_text)
+    if account_sheet_name is not None:
+        account_sheet_options = _extract_account_sheet_options(user_text)
+        account_sheet_amount_filters = _extract_account_sheet_amount_filters(user_text)
+        with auth_header_scope(auth_header):
+            return fetch_account_sheet_details_payload(
+                company_id=company_id,
+                account_name=account_sheet_name,
+                auth_header=auth_header,
+                **account_sheet_options,
+                **account_sheet_amount_filters,
+            )
+
+    account_search_name = _extract_account_name_search(user_text)
+    if account_search_name is not None:
+        with auth_header_scope(auth_header):
+            return fetch_account_by_name_payload(
+                company_id=company_id,
+                account_name=account_search_name,
+                auth_header=auth_header,
+            )
 
     invoice_books_type = _invoice_books_type(user_text)
     if invoice_books_type is not None:
