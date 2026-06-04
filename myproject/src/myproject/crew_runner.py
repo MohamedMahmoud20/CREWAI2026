@@ -432,6 +432,52 @@ def _extract_account_name_search(user_text: str) -> str | None:
     return cleaned or None
 
 
+def _looks_like_client_creation_request(user_text: str) -> bool:
+    text = (user_text or "").strip().casefold()
+    if not text:
+        return False
+    create_words = (
+        "\u0636\u064a\u0641",
+        "\u0627\u0636\u0641",
+        "\u0633\u062c\u0644",
+        "\u0627\u0646\u0634\u0627\u0621",
+        "\u0627\u0646\u0634\u0626",
+        "create",
+        "add",
+        "register",
+        "registration",
+    )
+    account_words = (
+        "\u0639\u0645\u064a\u0644",
+        "\u0627\u0644\u0639\u0645\u064a\u0644",
+        "\u062d\u0633\u0627\u0628",
+        "\u0627\u0644\u062d\u0633\u0627\u0628",
+        "client",
+        "customer",
+        "account",
+    )
+    return any(word in text for word in create_words) and any(word in text for word in account_words)
+
+
+def _has_create_client_details(user_text: str) -> bool:
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    cleaned = re.sub(
+        r"(?i)\b(complete|start|begin|the|a|an|new|client|customer|account|registration|register|create|add|of|for)\b",
+        " ",
+        text,
+    )
+    cleaned = re.sub(
+        r"(\u0633\u062c\u0644|\u0636\u064a\u0641|\u0627\u0636\u0641|\u0627\u0646\u0634\u0627\u0621|\u0627\u0646\u0634\u0626|\u0639\u0645\u064a\u0644|\u0627\u0644\u0639\u0645\u064a\u0644|\u062d\u0633\u0627\u0628|\u0627\u0644\u062d\u0633\u0627\u0628|\u062c\u062f\u064a\u062f)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" :،,-")
+    return bool(cleaned)
+
+
 def kickoff_crew(
     user_text: str,
     company_id: int | None = None,
@@ -440,6 +486,12 @@ def kickoff_crew(
     fiscal_year_id: int | None = None,
 ) -> Any:
     """Run the crew with the user's text; returns normalized payload (same as API `data`)."""
+    if _looks_like_client_creation_request(user_text) and not _has_create_client_details(user_text):
+        return {
+            "status": "needs_clarification",
+            "message": "من فضلك ارسل اسم العميل ورقم الموبايل والحساب الرئيسي لإكمال تسجيل العميل.",
+        }
+
     account_id = _extract_account_id_request(user_text)
     if account_id is not None:
         return fetch_account_by_id_payload(account_id=account_id, auth_header=auth_header)

@@ -900,11 +900,11 @@ def fetch_account_sheet_details_payload(
         "Accounts_Id": accounts_id,
     }
     endpoint = f"{ACCOUNTS_API_BASE}/accountsSheetDetails"
-    endpoint_url = _build_get_url(endpoint, params)
-    account_lookup_endpoint = _build_get_url(
-        f"{ACCOUNTS_API_BASE}/accounts",
-        {"accounts_name": query, "companyId": company_id},
-    )
+    # endpoint_url = _build_get_url(endpoint, params)
+    # account_lookup_endpoint = _build_get_url(
+    #     f"{ACCOUNTS_API_BASE}/accounts",
+    #     {"accounts_name": query, "companyId": company_id},
+    # )
 
     try:
         response = requests.get(
@@ -918,8 +918,6 @@ def fetch_account_sheet_details_payload(
             "status": "error",
             "http_status": None,
             "error": f"Account sheet details API request failed: {exc}",
-            "account_lookup_endpoint": account_lookup_endpoint,
-            "endpoint": endpoint_url,
             "account": _filter_accounts_fields(account) or account,
             "data": [],
         }
@@ -931,8 +929,6 @@ def fetch_account_sheet_details_payload(
             "status": "error",
             "http_status": response.status_code,
             "error": "Invalid JSON response",
-            "account_lookup_endpoint": account_lookup_endpoint,
-            "endpoint": endpoint_url,
             "account": _filter_accounts_fields(account) or account,
             "data": [],
         }
@@ -942,8 +938,6 @@ def fetch_account_sheet_details_payload(
             "status": "error",
             "http_status": response.status_code,
             "error": "API request failed",
-            "account_lookup_endpoint": account_lookup_endpoint,
-            "endpoint": response.url or endpoint_url,
             "account": _filter_accounts_fields(account) or account,
             "data": raw_data,
         }
@@ -963,8 +957,6 @@ def fetch_account_sheet_details_payload(
     result = {
         "status": "success",
         "http_status": response.status_code,
-        "account_lookup_endpoint": account_lookup_endpoint,
-        "endpoint": response.url or endpoint_url,
         "account": _filter_account_sheet_account(_filter_accounts_fields(account) or account),
         "data": filtered_data,
     }
@@ -1145,7 +1137,10 @@ class CreateClientInput(BaseModel):
     accounts_iscloseinaccount: str | None = Field(
         None, description="Close-in account id/flag (API returns string or null)"
     )
-    company_id: int = Field(15, description="Company ID (default 15)")
+    company_id: int | None = Field(
+        None,
+        description="Optional. Omit in Telegram/session usage; the logged-in user's session companyId is used.",
+    )
 
 
 class CreateClientTool(BaseTool):
@@ -1159,7 +1154,8 @@ class CreateClientTool(BaseTool):
         "(Arabic: اصناف، منتجات، مخزون). A request like 'عايز الاصناف' is unsupported by "
         "this client/account toolset.\n\n"
         "Action Input must contain real values such as accounts_name, accounts_mobile, "
-        "main_account_name or accounts_fatherid, and company_id. Never pass the tool schema, "
+        "and main_account_name or accounts_fatherid. Omit company_id when a session companyId exists. "
+        "Never pass the tool schema, "
         "properties, title, type, additionalProperties, or required list as input."
     )
     args_schema: type[BaseModel] = CreateClientInput
@@ -1176,11 +1172,19 @@ class CreateClientTool(BaseTool):
         accounts_isfinalacount: bool = False,
         accounts_isdistributor: bool = False,
         accounts_iscloseinaccount: str | None = None,
-        company_id: int = 15,
+        company_id: int | None = None,
     ) -> str:
         ctx_cid = get_active_company_id()
         if ctx_cid is not None:
             company_id = ctx_cid
+        if company_id is None:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "Missing company_id. Login/session companyId is required before creating a client.",
+                },
+                ensure_ascii=False,
+            )
         summary: dict[str, object] = {
             "status": "error",
             "error": None,

@@ -5,7 +5,9 @@ from myproject.config.agents import client_agent
 
 client_task = Task(
     description="""
-    Session company_id (if non-empty, use this companyId for all tools that accept company_id): {company_id}
+    Session company_id from the logged-in user: {company_id}
+    If Session company_id is non-empty, it is the only companyId to use for every tool.
+    Never assume, invent, or default companyId. Do not use examples such as 15 unless the session company_id is exactly 15.
 
     The user request is: {user_request}
 
@@ -35,6 +37,10 @@ client_task = Task(
     Use create_client only when the user explicitly asks to create/add/register a new
     client/account and provides a client/account name. Do not use create_client for vague requests
     or item requests.
+    For create_client, do not ask the user for companyId and do not invent companyId.
+    Use the session company_id. If it is empty, return a clarification/error saying login is required.
+    Do not simulate registration or return made-up client_id/client_name/client_phone_number/client_code.
+    If required client fields are missing, ask for the missing fields instead of creating fake data.
 
     Client/account search intent:
     Use get_client when the user asks to search/fetch/find an existing client/account.
@@ -69,6 +75,7 @@ client_task = Task(
 
     Tool-call rules:
     - Pass only real JSON argument values to tools.
+    - Do not include company_id in a tool call unless it comes from Session company_id.
     - Never pass a tool schema, properties, title, type, or required list as Action Input.
 
     Return the final result clearly in JSON text.

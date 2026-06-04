@@ -93,7 +93,13 @@ RESET_KEYWORDS = {
     "غير السنة المالية", "غير السنه الماليه", "تغيير السنة المالية", "تغيير السنه الماليه",
     "سنة مالية جديدة", "سنه ماليه جديده", "change fiscal year", "new fiscal year", "switch fiscal year",
     # General reset keywords
-    "مسح البيانات", "مسح البيانات", "إعادة تعيين", "اعاده تعيين", "reset", "clear data", "مسح كل شيء"
+    "مسح البيانات", "مسح البيانات", "إعادة تعيين", "اعاده تعيين", "reset", "clear data", "مسح كل شيء",
+    # Login/account reset keywords
+    "تسجيل خروج", "سجل خروج", "اعمل تسجيل خروج", "خروج من الحساب", "اخرج من الحساب",
+    "logout", "log out", "sign out",
+    "ادخل حساب جديد", "دخول حساب جديد", "تسجيل دخول جديد", "login جديد", "new login",
+    "ايميل جديد", "إيميل جديد", "غير الايميل", "غير الإيميل", "تغيير الايميل", "تغيير الإيميل",
+    "غير الحساب", "تغيير الحساب", "حساب مستخدم جديد"
 }
 
 YES_WORDS = {"نعم", "ايوه", "أيوه", "اه", "أه", "yes", "y"}
@@ -123,10 +129,39 @@ def chunk_text_for_telegram(text: str, max_len: int = TELEGRAM_MAX_MESSAGE_LENGT
     return [text[i : i + max_len] for i in range(0, len(text), max_len)]
 
 
+def _hide_internal_api_fields(value: object) -> object:
+    if isinstance(value, dict):
+        cleaned: dict[str, object] = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if key_text == "endpoint" or key_text.endswith("_endpoint"):
+                continue
+            cleaned[key] = _hide_internal_api_fields(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_hide_internal_api_fields(item) for item in value]
+    return value
+
+
+def _hide_internal_api_text(text: str) -> str:
+    cleaned_lines = []
+    for line in text.splitlines():
+        if re.search(r'"?[\w_]*endpoint"?\s*:', line, flags=re.IGNORECASE):
+            continue
+        cleaned_lines.append(re.sub(r"https?://\S+", "[internal API hidden]", line))
+    return "\n".join(cleaned_lines)
+
+
 def _result_to_text(result: object) -> str:
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            return _hide_internal_api_text(result)
+        result = parsed
     if isinstance(result, (dict, list)):
-        return json.dumps(result, ensure_ascii=False, indent=2)
-    return str(result)
+        return json.dumps(_hide_internal_api_fields(result), ensure_ascii=False, indent=2)
+    return _hide_internal_api_text(str(result))
 
 
 def _is_reset_request(text: str) -> bool:

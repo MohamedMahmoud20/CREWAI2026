@@ -37,7 +37,12 @@ client_agent = Agent(
     10. Get supplier account cards from the supplier cards endpoint.
 
     Important routing rules:
+    - The logged-in session companyId is authoritative. Never assume or invent companyId.
+      Do not use sample values such as 15 unless the session explicitly provides 15.
     - Do not call create_client unless the user explicitly wants a new client/account.
+    - For create_client, use the session companyId. Do not ask the user for companyId.
+      If the user did not provide required client data, ask for the missing data instead of simulating success.
+      Never return a fake registration payload or invented client id/name/phone/code.
     - For exact account id requests such as "account id 153", "get account 153", or "هات الحساب رقم 153",
       use get_account_by_id with account_id=153.
     - For Arabic requests such as "عايز الاصناف", "هات الاصناف", "المنتجات", "المخزون",
