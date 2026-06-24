@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import os
 from typing import Any
-
 import requests
 
-USERS_API_BASE = os.getenv("USERS_API_BASE", "http://104.248.246.2/api").rstrip("/")
+from config.settings import USERS_API_BASE
 
 
 def _extract_token(payload: Any) -> str | None:
