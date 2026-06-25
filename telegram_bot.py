@@ -14,11 +14,10 @@ from telegram.ext import (
 )
 from config.settings import BOT_TOKEN
 from auth.login import login_user
-from llm.ollama_client import local_llm
+from crews.users_crew import ask_users_crew
 
-# Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.ERROR
 )
 logger = logging.getLogger(__name__)
 
@@ -230,28 +229,28 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles normal chat messages by querying the Ollama LLM."""
+    """Handles Telegram messages by running the Users CrewAI assistant."""
     user_text = update.message.text.strip()
     if not user_text:
         return
 
     await update.message.chat.send_action(action="typing")
+    status_message = await update.message.reply_text("بفهم طلبك وبراجع البيانات...")
 
     try:
-        # Run synchronous LLM call in a separate thread
-        prompt = build_chat_prompt(user_text)
-        response = await asyncio.to_thread(
-            local_llm.generate,
-            prompt,
-            system=NATURAL_CHAT_SYSTEM_PROMPT,
+        response = await asyncio.wait_for(
+            asyncio.to_thread(ask_users_crew, user_text),
+            timeout=180,
         )
         if response:
-            await update.message.reply_text(response)
+            await status_message.edit_text(response[:4000])
         else:
-            await update.message.reply_text("لم يتم تلقي استجابة من الموديل.")
+            await status_message.edit_text("لم يتم تلقي استجابة.")
+    except asyncio.TimeoutError:
+        await status_message.edit_text("الموديل أخذ وقت طويل في تحليل الطلب. حاول تكتب الطلب بشكل أقصر.")
     except Exception as e:
-        logger.error(f"Error calling Ollama client: {e}")
-        await update.message.reply_text(f"حدث خطأ أثناء الاتصال بالخادم: {e}")
+        logger.error(f"Error running Users CrewAI agent: {e}")
+        await status_message.edit_text(f"حدث خطأ أثناء تشغيل الـ agent: {e}")
 
 
 def main() -> None:
@@ -259,7 +258,7 @@ def main() -> None:
         print("Error: BOT_TOKEN is not set in the environment or .env file.")
         sys.exit(1)
 
-    print("Starting Telegram Bot...")
+    print("Telegram bot is running. Send messages to the bot.")
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Login conversation handler
