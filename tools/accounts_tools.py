@@ -41,7 +41,6 @@ ACCOUNT_PUBLIC_COLUMNS: tuple[str, ...] = (
 ACCOUNT_PUBLIC_SELECT = ", ".join(ACCOUNT_PUBLIC_COLUMNS)
 FORBIDDEN_SQL_TOKENS: tuple[str, ...] = (
     "insert",
-    "update",
     "delete",
     "drop",
     "alter",
@@ -106,6 +105,14 @@ def _readonly_sql_denied() -> dict[str, Any]:
     }
 
 
+def _sql_access_denied() -> dict[str, Any]:
+    return {
+        "success": False,
+        "message": "Access denied. This SQL operation is not allowed.",
+        "data": None,
+    }
+
+
 def _is_readonly_accounts_select(sql: str) -> bool:
     normalized = sql.strip().lower()
     if not normalized.startswith("select"):
@@ -115,6 +122,49 @@ def _is_readonly_accounts_select(sql: str) -> bool:
     if "accounts" not in normalized:
         return False
     if re.search(r"\busers\b", normalized):
+        return False
+    return True
+
+
+def _is_safe_accounts_update(sql: str) -> bool:
+    normalized = sql.strip().lower()
+    statement = normalized.rstrip(";").strip()
+    forbidden = (
+        "insert",
+        "delete",
+        "drop",
+        "alter",
+        "truncate",
+        "create",
+        "replace",
+        "merge",
+        "grant",
+        "revoke",
+    )
+    if ";" in statement:
+        return False
+    if not statement.startswith("update"):
+        return False
+    if any(re.search(rf"\b{re.escape(token)}\b", statement) for token in forbidden):
+        return False
+    if not re.match(r"^update\s+accounts\s+set\s+", statement):
+        return False
+    if re.search(r"\busers\b", statement):
+        return False
+    if not re.search(r"\bwhere\s+id\s*=\s*\d+\b", statement):
+        return False
+    set_match = re.search(r"^update\s+accounts\s+set\s+(.+?)\s+where\s+id\s*=", statement)
+    if not set_match:
+        return False
+    allowed_columns = {
+        "accounts_name",
+        "accounts_mobile",
+        "accounts_address",
+        "accounts_notes",
+        "accounts_isnotactive",
+    }
+    assigned_columns = re.findall(r"\b(accounts_[a-z0-9_]+)\s*=", set_match.group(1))
+    if not assigned_columns or any(column not in allowed_columns for column in assigned_columns):
         return False
     return True
 
@@ -143,6 +193,33 @@ def execute_readonly_sql(sql: str) -> dict[str, Any]:
         return _success(rows, "Query executed successfully")
     except Exception as exc:
         return _failure(exc, "Failed to execute readonly SQL")
+
+
+@tool("Execute Confirmed Account Update")
+def execute_confirmed_account_update(sql: str) -> dict[str, Any]:
+    """
+    Execute a pre-confirmed UPDATE against accounts.
+
+    This tool must only be called after the user has seen the SQL and confirmed.
+    It only allows UPDATE accounts ... WHERE id = number statements.
+    """
+    cleaned_sql = sql.strip()
+    if not _is_safe_accounts_update(cleaned_sql):
+        return _sql_access_denied()
+
+    try:
+        print("=" * 50)
+        print("SQL CONFIRMED FOR EXECUTION:")
+        print(sql)
+        print("=" * 50)
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(cleaned_sql)
+                affected_rows = cursor.rowcount
+            conn.commit()
+        return _success({"affected_rows": affected_rows}, "Update executed successfully")
+    except Exception as exc:
+        return _failure(exc, "Failed to execute account update")
 
 
 @tool("Get Account By ID")
@@ -454,4 +531,5 @@ ACCOUNTS_TOOLS = [
     get_parent_account,
     get_account_tree,
     execute_readonly_sql,
+    execute_confirmed_account_update,
 ]

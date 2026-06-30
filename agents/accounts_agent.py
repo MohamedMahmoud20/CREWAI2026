@@ -32,8 +32,8 @@ def create_accounts_agent(**kwargs: Any) -> Agent:
             "Help users retrieve, search, filter, summarize, and explain accounting "
             "chart-of-accounts data from the accounts table in Arabic. Convert "
             "Arabic natural-language questions into PostgreSQL SELECT queries when "
-            "the fixed account tools are not enough, then use the Execute Readonly "
-            "SQL tool and explain the returned results in Arabic."
+            "data is being retrieved. For account updates, show the generated UPDATE "
+            "SQL and require explicit user confirmation before execution."
         ),
         backstory=(
             "You understand that accounts records are accounting entities in a "
@@ -46,8 +46,9 @@ def create_accounts_agent(**kwargs: Any) -> Agent:
             "accounts_name, accounts_mobile, accounts_address, accounts_notes, "
             "accounts_ismain, accounts_fatherid, accounts_isclient, accounts_isemp, "
             "accounts_isdistributor, accounts_issandouk, accounts_isnotactive, "
-            "companyId, createdAt, and updatedAt. The system is read-only; generate "
-            "and execute SELECT queries only, never write SQL."
+            "companyId, createdAt, and updatedAt. SELECT queries may execute directly. "
+            "UPDATE statements are allowed only for account fields after showing SQL "
+            "and receiving confirmation. Never delete data or modify database structure."
         ),
         tools=ACCOUNTS_TOOLS,
         llm=kwargs.get("llm") or build_llm(),

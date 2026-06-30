@@ -10,6 +10,7 @@ from llm.ollama_client import local_llm
 from tasks.accounts_tasks import create_accounts_task
 from tools.accounts_tools import (
     count_accounts,
+    execute_confirmed_account_update,
     execute_readonly_sql,
     get_account_by_code,
     get_account_by_id,
@@ -50,6 +51,7 @@ TOOL_MAP = {
     "get_parent_account": get_parent_account,
     "get_account_tree": get_account_tree,
     "execute_readonly_sql": execute_readonly_sql,
+    "execute_confirmed_account_update": execute_confirmed_account_update,
 }
 
 WRITE_REQUEST_TOKENS = (
@@ -69,6 +71,24 @@ WRITE_REQUEST_TOKENS = (
     "ضيف",
     "عدل",
     "تعديل",
+    "احذف",
+    "حذف",
+    "امسح",
+    "مسح",
+    "انشئ",
+    "أنشئ",
+)
+
+FORBIDDEN_WRITE_TOKENS = (
+    "delete",
+    "drop",
+    "alter",
+    "truncate",
+    "create",
+    "replace",
+    "merge",
+    "grant",
+    "revoke",
     "احذف",
     "حذف",
     "امسح",
@@ -99,6 +119,23 @@ def _normalize_digits(text: str) -> str:
 def _first_number(text: str) -> int | None:
     match = re.search(r"\d+", _normalize_digits(text))
     return int(match.group(0)) if match else None
+
+
+def _extract_explicit_account_id(text: str) -> int | None:
+    normalized = _normalize_digits(text)
+    patterns = (
+        r"(?:id|ID)\s*[:#]?\s*(\d+)",
+        r"(?:رقم الحساب|حساب رقم|الحساب رقم|رقم)\s*[:#]?\s*(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _sql_quote(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -254,6 +291,8 @@ def _fallback_sql_for_question(question: str) -> str:
 
 def _direct_sql_for_question(question: str) -> str | None:
     normalized = _normalize_digits(question).lower()
+    number = _first_number(question)
+    limit = number or 50
     wants_count = any(token in normalized for token in ("عدد", "كام", "how many", "count"))
     word_filter = _extract_word_filter(question)
 
@@ -267,6 +306,45 @@ def _direct_sql_for_question(question: str) -> str | None:
         if wants_count:
             return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_mobile IS NULL OR accounts_mobile = '';"
         return "SELECT * FROM accounts WHERE accounts_mobile IS NULL OR accounts_mobile = '' LIMIT 50;"
+
+    if any(token in normalized for token in ("فرعية", "الفرعية", "فرعيه", "الفرعيه", "فرعي", "sub")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE COALESCE(accounts_ismain, false) = false;"
+        return (
+            "SELECT * FROM accounts "
+            "WHERE COALESCE(accounts_ismain, false) = false "
+            f"ORDER BY id ASC LIMIT {limit};"
+        )
+
+    if any(token in normalized for token in ("رئيسية", "الرئيسية", "رئيسيه", "الرئيسيه", "رئيسي", "main")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_ismain = true;"
+        return f"SELECT * FROM accounts WHERE accounts_ismain = true ORDER BY id ASC LIMIT {limit};"
+
+    if any(token in normalized for token in ("عملاء", "عميل", "customers", "clients")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_isclient = true;"
+        return f"SELECT * FROM accounts WHERE accounts_isclient = true ORDER BY id ASC LIMIT {limit};"
+
+    if any(token in normalized for token in ("موظفين", "موظف", "employees")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_isemp = true;"
+        return f"SELECT * FROM accounts WHERE accounts_isemp = true ORDER BY id ASC LIMIT {limit};"
+
+    if any(token in normalized for token in ("موزعين", "موزع", "distributors")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_isdistributor = true;"
+        return f"SELECT * FROM accounts WHERE accounts_isdistributor = true ORDER BY id ASC LIMIT {limit};"
+
+    if any(token in normalized for token in ("خزن", "خزنة", "خزينه", "صندوق", "cash", "treasury")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_issandouk = true;"
+        return f"SELECT * FROM accounts WHERE accounts_issandouk = true ORDER BY id ASC LIMIT {limit};"
+
+    if any(token in normalized for token in ("غير نشط", "غير نشطة", "غير النشطة", "معطل", "inactive")):
+        if wants_count:
+            return "SELECT COUNT(*) AS count FROM accounts WHERE accounts_isnotactive = true;"
+        return f"SELECT * FROM accounts WHERE accounts_isnotactive = true ORDER BY id ASC LIMIT {limit};"
 
     return None
 
@@ -344,6 +422,121 @@ def _is_write_request(question: str) -> bool:
     return any(re.search(rf"\b{re.escape(token)}\b", normalized) for token in WRITE_REQUEST_TOKENS[:11]) or any(
         token in normalized for token in WRITE_REQUEST_TOKENS[11:]
     )
+
+
+def is_forbidden_account_write_request(question: str) -> bool:
+    normalized = question.lower()
+    return any(re.search(rf"\b{re.escape(token)}\b", normalized) for token in FORBIDDEN_WRITE_TOKENS[:9]) or any(
+        token in normalized for token in FORBIDDEN_WRITE_TOKENS[9:]
+    )
+
+
+def is_account_update_request(question: str) -> bool:
+    normalized = _normalize_digits(question).lower()
+    update_tokens = (
+        "update",
+        "غير",
+        "غيّر",
+        "عدل",
+        "تعديل",
+        "بدل",
+        "حط",
+        "خلي",
+        "deactivate",
+        "عطل",
+        "عطّل",
+        "تعطيل",
+        "وقف",
+        "اوقف",
+        "أوقف",
+    )
+    account_tokens = ("حساب", "الحساب", "accounts", "account")
+    return any(token in normalized for token in update_tokens) and any(token in normalized for token in account_tokens)
+
+
+def _extract_update_value(question: str) -> str | None:
+    parts = re.split(r"\s+(?:إلى|الى|الي|إلي|لـ|to)\s+", question.strip(), flags=re.IGNORECASE)
+    if len(parts) > 1:
+        value = parts[-1].strip(" .،؟?!")
+        if value:
+            return value
+    return None
+
+
+def create_account_update_proposal(question: str) -> dict[str, Any]:
+    normalized = _normalize_digits(question).lower()
+    account_id = _extract_explicit_account_id(question)
+    if account_id is None:
+        return {
+            "success": False,
+            "message": (
+                "من فضلك اكتب رقم الحساب ID المطلوب تحديثه حتى لا يتم تعديل حساب بالخطأ.\n"
+                "مثال: غير اسم الحساب رقم 15 إلى رأس المال3"
+            ),
+            "data": None,
+        }
+
+    column: str | None = None
+    value: Any = None
+    description: str | None = None
+
+    if any(token in normalized for token in ("عطل", "عطّل", "تعطيل", "وقف", "اوقف", "أوقف", "deactivate", "غير نشط")):
+        column = "accounts_isnotactive"
+        value = True
+        description = "سيتم تعطيل الحساب وجعله غير نشط."
+    elif any(token in normalized for token in ("موبايل", "هاتف", "mobile", "phone")):
+        column = "accounts_mobile"
+        value = _extract_update_value(question)
+        description = f"سيتم تغيير رقم موبايل الحساب إلى: {value}"
+    elif any(token in normalized for token in ("عنوان", "address")):
+        column = "accounts_address"
+        value = _extract_update_value(question)
+        description = f"سيتم تغيير عنوان الحساب إلى: {value}"
+    elif any(token in normalized for token in ("اسم", "name")):
+        column = "accounts_name"
+        value = _extract_update_value(question)
+        description = f"سيتم تغيير اسم الحساب إلى: {value}"
+
+    if not column:
+        return {
+            "success": False,
+            "message": "نوع التحديث غير واضح. المتاح حاليا: الاسم، الموبايل، العنوان، أو تعطيل الحساب.",
+            "data": None,
+        }
+    if value is None or value == "":
+        return {
+            "success": False,
+            "message": "القيمة الجديدة غير واضحة. اكتبها بعد كلمة إلى، مثال: غير موبايل الحساب رقم 10 إلى 01000000000",
+            "data": None,
+        }
+
+    if isinstance(value, bool):
+        sql_value = "true" if value else "false"
+    else:
+        sql_value = f"'{_sql_quote(str(value))}'"
+
+    sql = f"UPDATE accounts\nSET {column} = {sql_value}\nWHERE id = {account_id};"
+    return {
+        "success": True,
+        "message": (
+            "التغيير التالي يحتاج تأكيد قبل التنفيذ:\n\n"
+            f"{description}\n"
+            f"Account ID: {account_id}\n\n"
+            "SQL:\n"
+            f"{sql}\n\n"
+            "للتنفيذ اكتب: تأكيد\n"
+            "للإلغاء اكتب: إلغاء"
+        ),
+        "data": {"sql": sql, "account_id": account_id, "description": description},
+    }
+
+
+def execute_confirmed_account_update_sql(sql: str) -> str:
+    result = execute_confirmed_account_update.run(sql=sql)
+    if not result.get("success"):
+        return "لم يتم تنفيذ التحديث. العملية مرفوضة أو حدث خطأ أثناء التنفيذ."
+    data = result.get("data") or {}
+    return f"تم تنفيذ التحديث بنجاح. عدد السجلات التي تم تعديلها: {data.get('affected_rows', 0)}"
 
 
 def _looks_like_accounts_request(question: str) -> bool:
@@ -644,8 +837,12 @@ def create_accounts_crew(question: str, **kwargs: Any) -> Crew:
 
 
 def ask_accounts_crew(question: str) -> str:
-    if _is_write_request(question):
-        return "Access denied. Only SELECT queries are allowed."
+    if is_forbidden_account_write_request(question):
+        return "هذه العملية غير مسموح بها. لا يمكن حذف البيانات أو تعديل بنية قاعدة البيانات."
+
+    if is_account_update_request(question):
+        proposal = create_account_update_proposal(question)
+        return proposal["message"]
 
     if not _looks_like_accounts_request(question):
         return _chat_response(question)

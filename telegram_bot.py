@@ -14,7 +14,13 @@ from telegram.ext import (
 )
 from config.settings import BOT_TOKEN
 from auth.login import login_user
-from crews.accounts_crew import ask_accounts_crew
+from crews.accounts_crew import (
+    ask_accounts_crew,
+    create_account_update_proposal,
+    execute_confirmed_account_update_sql,
+    is_account_update_request,
+    is_forbidden_account_write_request,
+)
 from crews.users_crew import ask_users_crew
 
 logging.basicConfig(
@@ -137,6 +143,16 @@ def ask_database_assistant(text: str) -> str:
     if domain == "users":
         return ask_users_crew(text)
     return ask_accounts_crew(text)
+
+
+def is_confirmation_message(text: str) -> bool:
+    normalized = _normalize_digits(text).strip().lower()
+    return normalized in {"تأكيد", "اكد", "أكد", "نعم", "yes", "confirm", "ok", "تمام"}
+
+
+def is_cancel_message(text: str) -> bool:
+    normalized = _normalize_digits(text).strip().lower()
+    return normalized in {"الغاء", "إلغاء", "cancel", "لا", "no"}
 
 
 def load_sessions() -> dict:
@@ -315,10 +331,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not user_text:
         return
 
+    if context.user_data.get("pending_account_update_sql"):
+        if is_confirmation_message(user_text):
+            await update.message.chat.send_action(action="typing")
+            status_message = await update.message.reply_text("جاري تنفيذ التحديث بعد التأكيد...")
+            sql = context.user_data.pop("pending_account_update_sql")
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(execute_confirmed_account_update_sql, sql),
+                    timeout=180,
+                )
+                await status_message.edit_text(response[:4000])
+            except asyncio.TimeoutError:
+                await status_message.edit_text("تنفيذ التحديث أخذ وقت طويل. تحقق من الاتصال وحاول مرة أخرى.")
+            except Exception as e:
+                logger.error(f"Error executing confirmed account update: {e}")
+                await status_message.edit_text("حدث خطأ أثناء تنفيذ التحديث.")
+            return
+
+        if is_cancel_message(user_text):
+            context.user_data.pop("pending_account_update_sql", None)
+            await update.message.reply_text("تم إلغاء التحديث ولم يتم تنفيذ أي تعديل.")
+            return
+
+        await update.message.reply_text("يوجد تحديث معلق. اكتب: تأكيد للتنفيذ، أو إلغاء لإلغاء العملية.")
+        return
+
     await update.message.chat.send_action(action="typing")
     status_message = await update.message.reply_text("بفهم طلبك وبراجع البيانات...")
 
     try:
+        if choose_data_domain(user_text) == "accounts" and is_forbidden_account_write_request(user_text):
+            await status_message.edit_text("هذه العملية غير مسموح بها. لا يمكن حذف البيانات أو تعديل بنية قاعدة البيانات.")
+            return
+
+        if choose_data_domain(user_text) == "accounts" and is_account_update_request(user_text):
+            proposal = create_account_update_proposal(user_text)
+            if proposal.get("success"):
+                context.user_data["pending_account_update_sql"] = proposal["data"]["sql"]
+            await status_message.edit_text(proposal["message"][:4000])
+            return
+
         response = await asyncio.wait_for(
             asyncio.to_thread(ask_database_assistant, user_text),
             timeout=180,
