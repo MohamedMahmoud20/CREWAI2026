@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 from config.settings import BOT_TOKEN
 from auth.login import login_user
+from crews.accounts_crew import ask_accounts_crew
 from crews.users_crew import ask_users_crew
 
 logging.basicConfig(
@@ -56,6 +57,86 @@ def build_chat_prompt(user_text: str) -> str:
         f"User message:\n{user_text}\n\n"
         "Assistant response:"
     )
+
+
+def _normalize_digits(text: str) -> str:
+    arabic_digits = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+    return text.translate(arabic_digits)
+
+
+def choose_data_domain(text: str) -> str:
+    """Route Telegram messages to the users or accounts assistant."""
+    normalized = _normalize_digits(text).lower()
+
+    account_tokens = (
+        "account",
+        "accounts",
+        "حساب",
+        "الحساب",
+        "الحسابات",
+        "شجرة",
+        "هيكل",
+        "رئيسي",
+        "رئيسية",
+        "فرعي",
+        "فرعية",
+        "خزنة",
+        "خزن",
+        "صندوق",
+        "عميل",
+        "عملاء",
+        "موزع",
+        "موزعين",
+        "غير نشط",
+        "موبايل",
+        "عنوان",
+        "ملاحظات",
+    )
+    user_tokens = (
+        "user",
+        "users",
+        "مستخدم",
+        "المستخدم",
+        "المستخدمين",
+        "email",
+        "ايميل",
+        "إيميل",
+        "admin",
+        "ادمن",
+        "أدمن",
+        "super admin",
+        "pos",
+        "كاشير",
+        "فرع",
+        "branch",
+        "قسم",
+        "department",
+        "صلاحية",
+        "صلاحيات",
+    )
+
+    account_score = sum(1 for token in account_tokens if token in normalized)
+    user_score = sum(1 for token in user_tokens if token in normalized)
+
+    if account_score > user_score:
+        return "accounts"
+    if user_score > account_score:
+        return "users"
+
+    if any(token in normalized for token in ("حساب", "account")):
+        return "accounts"
+    if any(token in normalized for token in ("مستخدم", "user", "email", "ايميل", "إيميل")):
+        return "users"
+
+    return "accounts"
+
+
+def ask_database_assistant(text: str) -> str:
+    domain = choose_data_domain(text)
+    logger.info("Routing message to %s assistant", domain)
+    if domain == "users":
+        return ask_users_crew(text)
+    return ask_accounts_crew(text)
 
 
 def load_sessions() -> dict:
@@ -229,7 +310,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles Telegram messages by running the Users CrewAI assistant."""
+    """Handles Telegram messages by routing to Users or Accounts assistants."""
     user_text = update.message.text.strip()
     if not user_text:
         return
@@ -239,7 +320,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         response = await asyncio.wait_for(
-            asyncio.to_thread(ask_users_crew, user_text),
+            asyncio.to_thread(ask_database_assistant, user_text),
             timeout=180,
         )
         if response:
@@ -249,8 +330,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except asyncio.TimeoutError:
         await status_message.edit_text("الموديل أخذ وقت طويل في تحليل الطلب. حاول تكتب الطلب بشكل أقصر.")
     except Exception as e:
-        logger.error(f"Error running Users CrewAI agent: {e}")
-        await status_message.edit_text(f"حدث خطأ أثناء تشغيل الـ agent: {e}")
+        logger.error(f"Error running database assistant: {e}")
+        await status_message.edit_text("حدث خطأ أثناء معالجة الطلب. حاول مرة أخرى أو اكتب الطلب بشكل أوضح.")
 
 
 def main() -> None:
@@ -259,7 +340,15 @@ def main() -> None:
         sys.exit(1)
 
     print("Telegram bot is running. Send messages to the bot.")
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
 
     # Login conversation handler
     login_handler = ConversationHandler(
@@ -278,7 +367,12 @@ def main() -> None:
     application.add_handler(login_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    application.run_polling()
+    application.run_polling(
+        bootstrap_retries=5,
+        drop_pending_updates=True,
+        timeout=30,
+        poll_interval=1.0,
+    )
 
 
 if __name__ == "__main__":
